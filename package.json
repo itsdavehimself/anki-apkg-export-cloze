@@ -1,53 +1,32 @@
 {
-  "name": "anki-apkg-export",
-  "description": "Generate decks for Anki (spaced repetition software)",
+  "name": "anki-apkg-export-cloze",
   "version": "4.0.3",
-  "main": "dist/index.js",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
-    "jszip": "^3.2.2",
+    "arraybuffer-equal": "^1.0.4",
+    "jszip": "^3.10.1",
+    "lodash.sortby": "^4.7.0",
+    "pify": "^4.0.1",
     "sha1": "^1.1.1",
-    "sql.js": "^0.5.0"
+    "sql.js": "^1.13.0",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
-    "@babel/cli": "^7.0.0",
-    "@babel/core": "^7.0.0",
-    "@babel/polyfill": "^7.0.0",
-    "@babel/preset-env": "^7.0.0",
-    "@babel/register": "^7.0.0",
-    "arraybuffer-equal": "1.0.4",
-    "ava": "^2.4.0",
-    "babel-eslint": "^10.0.3",
-    "eslint": "^6.8.0",
-    "eslint-config-prettier": "^6.9.0",
-    "eslint-plugin-prettier": "^3.1.2",
-    "husky": "^3.1.0",
-    "lodash.sortby": "4.7.0",
-    "mkdirp": "0.5.1",
-    "pify": "^4.0.1",
-    "prettier": "^1.19.1",
+    "@babel/cli": "^7.24.0",
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/register": "^7.24.0",
+    "ava": "^5.3.1",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.1.3",
+    "husky": "^9.0.11",
+    "prettier": "^3.2.5",
     "proxyquire": "^2.1.3",
-    "sinon": "^8.0.2",
-    "sqlite3": "4.1.1"
-  },
-  "author": "ewnd9 <ewndnine@gmail.com>",
-  "keywords": [
-    "anki",
-    "spaced repetition software",
-    "webpack"
-  ],
-  "license": "MIT",
-  "preferGlobal": "true",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ewnd9/anki-apkg-export.git"
-  },
-  "scripts": {
-    "build": "babel -d dist src",
-    "build:watch": "babel -w -d dist src",
-    "lint": "eslint 'src/**/*.js' 'test/**/*.js'",
-    "postpublish": "rm -rf dist",
-    "prepare": "yarn run build",
-    "test": "yarn run lint && ava",
-    "test:watch": "yarn run test -- --watch"
+    "sinon": "^17.0.1"
   }
 }

@@ -1,177 +1,120 @@
-import sha1 from 'sha1';
-import Zip from 'jszip';
+// exporter.js
+import { fileURLToPath, pathToFileURL } from "url";
+import path from "path";
+import initSqlJs from "sql.js";
+import JSZip from "jszip";
+import sha1 from "sha1";
+import { v4 as uuidv4 } from "uuid";
+import createTemplate from "./template.js";
+import fs from "fs";
 
-export default class {
-  constructor(deckName, { template, sql }) {
-    this.db = new sql.Database();
-    this.db.run(template);
-
-    const now = Date.now();
-    const topDeckId = this._getId('cards', 'did', now);
-    const topModelId = this._getId('notes', 'mid', now);
-
-    this.deckName = deckName;
-    this.zip = new Zip();
-    this.media = [];
-    this.topDeckId = topDeckId;
-    this.topModelId = topModelId;
-    this.separator = '\u001F';
-
-    const decks = this._getInitialRowValue('col', 'decks');
-    const deck = getLastItem(decks);
-    deck.name = this.deckName;
-    deck.id = topDeckId;
-    decks[topDeckId + ''] = deck;
-    this._update('update col set decks=:decks where id=1', { ':decks': JSON.stringify(decks) });
-
-    const models = this._getInitialRowValue('col', 'models');
-    const model = getLastItem(models);
-    model.name = this.deckName;
-    model.did = this.topDeckId;
-    model.id = topModelId;
-    models[`${topModelId}`] = model;
-    this._update('update col set models=:models where id=1', { ':models': JSON.stringify(models) });
+/**
+ * @param {{ decks: { id: number, name: string }[],
+ *            cards: Array<{ deckId: number, front?: string, back?: string, text?: string }>,
+ *            noteType?: "basic"|"cloze" }}
+ */
+export async function generateApkg({ decks = [], cards = [] }) {
+  // 1. Locate the WASM file shipped in dist/
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const wasmPath = path.resolve(
+    __dirname,
+    "../node_modules/sql.js/dist/sql-wasm.wasm",
+  );
+  if (!fs.existsSync(wasmPath)) {
+    throw new Error(`❌ sql-wasm.wasm not found at ${wasmPath}`);
   }
 
-  save(options) {
-    const { zip, db, media } = this;
-    const binaryArray = db.export();
-    const mediaObj = media.reduce((prev, curr, idx) => {
-      prev[idx] = curr.filename;
-      return prev;
-    }, {});
+  // 2. Initialize SQL.js with our WASM
+  const SQL = await initSqlJs({
+    locateFile: () => pathToFileURL(wasmPath).href,
+  });
 
-    zip.file('collection.anki2', new Buffer(binaryArray));
-    zip.file('media', JSON.stringify(mediaObj));
+  // 3. Build a fresh in-memory DB and seed it with the Anki schema + decks
+  const db = new SQL.Database();
+  // createTemplate must now accept your decks array and interpolate it into {{decks}}
+  const { sql, modelIds } = createTemplate({
+    noteType: cards[0]?.noteType || "basic",
+    decks,
+  });
+  db.exec(sql);
 
-    media.forEach((item, i) => zip.file(i, item.data));
+  // 4. Prepare ID counters
+  let nextNoteId = Date.now();
+  let nextCardId = nextNoteId * 10;
 
-    if (process.env.APP_ENV === 'browser' || typeof window !== 'undefined') {
-      return zip.generateAsync(Object.assign({}, { type: 'blob' }, options));
+  // Helper: compute the Anki checksum for sorting
+  function computeCsum(sfld) {
+    const hash = sha1(sfld);
+    return parseInt(hash.slice(0, 8), 16);
+  }
+
+  const modTime = Math.floor(Date.now() / 1000);
+  const usn = 0;
+  const tags = "";
+
+  // 5. Insert every card (and its note) into the DB
+  for (const card of cards) {
+    // 5a. Note row
+    const type = card.noteType || "basic";
+    const nid = nextNoteId++;
+    const guid = uuidv4().replace(/-/g, "");
+    const mid = modelIds[type];
+
+    let flds, sfld;
+    if (type === "cloze") {
+      flds = card.text;
+      sfld = card.text;
     } else {
-      return zip.generateAsync(
-        Object.assign(
-          {},
-          {
-            type: 'nodebuffer',
-            base64: false,
-            compression: 'DEFLATE'
-          },
-          options
-        )
-      );
+      flds = `${card.front}\u001F${card.back}`;
+      sfld = card.front;
     }
-  }
+    const csum = computeCsum(sfld);
 
-  addMedia(filename, data) {
-    this.media.push({ filename, data });
-  }
+    db.run(
+      `INSERT INTO notes
+         (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [nid, guid, mid, modTime, usn, tags, flds, sfld, csum, 0, ""],
+    );
 
-  addCard(front, back, { tags } = {}) {
-    const { topDeckId, topModelId, separator } = this;
-    const now = Date.now();
-    const note_guid = this._getNoteGuid(topDeckId, front, back);
-    const note_id = this._getNoteId(note_guid, now);
-
-    let strTags = '';
-    if (typeof tags === 'string') {
-      strTags = tags;
-    } else if (Array.isArray(tags)) {
-      strTags = this._tagsToStr(tags);
-    }
-
-    this._update('insert or replace into notes values(:id,:guid,:mid,:mod,:usn,:tags,:flds,:sfld,:csum,:flags,:data)', {
-      ':id': note_id, // integer primary key,
-      ':guid': note_guid, // text not null,
-      ':mid': topModelId, // integer not null,
-      ':mod': this._getId('notes', 'mod', now), // integer not null,
-      ':usn': -1, // integer not null,
-      ':tags': strTags, // text not null,
-      ':flds': front + separator + back, // text not null,
-      ':sfld': front, // integer not null,
-      ':csum': this._checksum(front + separator + back), //integer not null,
-      ':flags': 0, // integer not null,
-      ':data': '' // text not null,
-    });
-
-    return this._update(
-      'insert or replace into cards values(:id,:nid,:did,:ord,:mod,:usn,:type,:queue,:due,:ivl,:factor,:reps,:lapses,:left,:odue,:odid,:flags,:data)',
-      {
-        ':id': this._getCardId(note_id, now), // integer primary key,
-        ':nid': note_id, // integer not null,
-        ':did': topDeckId, // integer not null,
-        ':ord': 0, // integer not null,
-        ':mod': this._getId('cards', 'mod', now), // integer not null,
-        ':usn': -1, // integer not null,
-        ':type': 0, // integer not null,
-        ':queue': 0, // integer not null,
-        ':due': 179, // integer not null,
-        ':ivl': 0, // integer not null,
-        ':factor': 0, // integer not null,
-        ':reps': 0, // integer not null,
-        ':lapses': 0, // integer not null,
-        ':left': 0, // integer not null,
-        ':odue': 0, // integer not null,
-        ':odid': 0, // integer not null,
-        ':flags': 0, // integer not null,
-        ':data': '' // text not null
-      }
+    // 5b. Card row
+    const cid = nextCardId++;
+    const did = card.deckId;
+    db.run(
+      `INSERT INTO cards
+         (id, nid, did, ord, mod, usn, type, queue,
+          due, ivl, factor, reps, lapses, left,
+          odue, odid, flags, data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        cid,
+        nid,
+        did,
+        0, // ord
+        modTime,
+        usn,
+        0, // type
+        0, // queue
+        0, // due
+        0, // ivl
+        0, // factor
+        0, // reps
+        0, // lapses
+        0, // left
+        0, // odue
+        0, // odid
+        0, // flags
+        "", // data
+      ],
     );
   }
 
-  _update(query, obj) {
-    this.db.prepare(query).getAsObject(obj);
-  }
+  // 6. Export the SQLite file & wrap in a ZIP
+  const collectionBinary = db.export();
+  const zip = new JSZip();
+  zip.file("collection.anki2", new Uint8Array(collectionBinary));
 
-  _getInitialRowValue(table, column = 'id') {
-    const query = `select ${column} from ${table}`;
-    return this._getFirstVal(query);
-  }
-
-  _checksum(str) {
-    return parseInt(sha1(str).substr(0, 8), 16);
-  }
-
-  _getFirstVal(query) {
-    return JSON.parse(this.db.exec(query)[0].values[0]);
-  }
-
-  _tagsToStr(tags = []) {
-    return ' ' + tags.map(tag => tag.replace(/ /g, '_')).join(' ') + ' ';
-  }
-
-  _getId(table, col, ts) {
-    const query = `SELECT ${col} from ${table} WHERE ${col} >= :ts ORDER BY ${col} DESC LIMIT 1`;
-    const rowObj = this.db.prepare(query).getAsObject({ ':ts': ts });
-
-    return rowObj[col] ? +rowObj[col] + 1 : ts;
-  }
-
-  _getNoteId(guid, ts) {
-    const query = `SELECT id from notes WHERE guid = :guid ORDER BY id DESC LIMIT 1`;
-    const rowObj = this.db.prepare(query).getAsObject({ ':guid': guid });
-
-    return rowObj.id || this._getId('notes', 'id', ts);
-  }
-
-  _getNoteGuid(topDeckId, front, back) {
-    return sha1(`${topDeckId}${front}${back}`);
-  }
-
-  _getCardId(note_id, ts) {
-    const query = `SELECT id from cards WHERE nid = :note_id ORDER BY id DESC LIMIT 1`;
-    const rowObj = this.db.prepare(query).getAsObject({ ':note_id': note_id });
-
-    return rowObj.id || this._getId('cards', 'id', ts);
-  }
+  // 7. Return a Promise<Buffer> suitable for S3 upload or HTTP response
+  return zip.generateAsync({ type: "nodebuffer" });
 }
-
-export const getLastItem = obj => {
-  const keys = Object.keys(obj);
-  const lastKey = keys[keys.length - 1];
-
-  const item = obj[lastKey];
-  delete obj[lastKey];
-
-  return item;
-};

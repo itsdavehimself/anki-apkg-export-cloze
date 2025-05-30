@@ -1,20 +1,9 @@
-import Exporter from './exporter';
-import createTemplate from './template';
+import { generateApkg } from "./exporter.js";
 
-let sql;
+const buffer = await generateApkg({
+  cards: allNotes,
+  noteType: allNotes[0].noteType || "basic",
+  decks,
+});
 
-if (process.env.APP_ENV === 'browser' || typeof window !== 'undefined') {
-  require('script-loader!sql.js');
-  sql = window.SQL;
-} else {
-  sql = require('sql.js');
-}
-
-export { Exporter };
-
-export default function(deckName, template) {
-  return new Exporter(deckName, {
-    template: createTemplate(template),
-    sql
-  });
-}
+return buffer;
